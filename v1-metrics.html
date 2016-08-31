@@ -1,0 +1,153 @@
+<!-- adapted from https://ipv.sx/telemetry/general.html -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+<title>Telemetry time series</title>
+<script src="./Telemetry time series_files/telemetry.js"></script>
+<script src="./Telemetry time series_files/jquery.min.js"></script>
+<script>
+// callback is called with the series, in the form [date, bin-count, total-count]
+function loadSeries(version, measure, target, callback) {
+  Telemetry.loadEvolutionOverTime(version, measure,
+                                    function(histogramEvolution) {
+    data = [];
+
+    histogramEvolution.each(function(date, histogram) {
+      if (histogram.count() < THRESHOLD) {
+        return;
+      }
+
+      totalToday = 0;
+      histogram.each(function(count, start, end, index) {
+        if (target.indexOf(start) > -1) {
+          totalToday += count;
+        }
+      });
+      data.push([date, totalToday, histogram.count()]);
+    });
+
+    callback(data);
+  });
+}
+
+// callback is called with (version, series)
+// finalCallback is called without arguments
+function loadAll(versions, measure, target, callback, finalCallback) {
+  loadSeries(versions[0], measure, target, function(data) {
+    callback(versions[0], data);
+
+    if (versions.length > 1) {
+      loadAll(versions.slice(1), measure, target, callback, finalCallback);
+    } else {
+      finalCallback();
+    }
+  });
+}
+
+function produceMetrics(byVersion) {
+  timeSeries = {}
+  sql = [];
+  for (version in byVersion) {
+    byVersion[version].map(function(pt) {
+      time = pt[0];
+      num = pt[1];
+      total = pt[2]
+      versionNum = version.split('/')[1];
+
+      console.log(time, versionNum, num, total);
+      // Janky SQL quoting.
+      var q = (s => /^[0-9A-Za-z_]*$/.test(s) && '"' + s + '"');
+      // Janky date formatting.
+      var zero = (n => n < 10 ? ('0' + n) : ('' + n))
+      var formatDate = (d => d.getUTCFullYear() + zero(d.getUTCMonth() + 1) +
+        zero(d.getUTCDate()));
+      sql.push('REPLACE INTO metrics (date, version, metric, count, sum) VALUES(' +
+        [q(formatDate(time)), versionNum, q(MEASURE.toLowerCase()), num, total].join(', ') +
+         ');')
+
+      if (time in timeSeries) {
+        timeSeries[time][0] += pt[1];
+        timeSeries[time][1] += pt[2];
+      } else {
+        timeSeries[time] = [pt[1], pt[2]];
+      }
+    });
+  }
+
+  function escapeHTML(str) {
+      return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;")
+          .replace(/\//g, "&#x2F;")
+  }
+  document.write("<pre>" + escapeHTML(sql.join('\n')) + "</pre>");
+}
+
+Telemetry.init(function() {
+  $("#load").prop("disabled", false);
+});
+
+const KNOWN_VERSIONS = {
+  "nightly": true,
+  "aurora": true,
+  "beta": true,
+  "release": true
+};
+function validVersion(ver) {
+  return (ver.match(/\//g).length == 1) &&
+    (ver.split("/")[0] in KNOWN_VERSIONS) &&
+    !!(ver.split("/")[1].match(/^[0-9]+$/));
+}
+
+function chart() {
+  versions = $("#versions").val().split(/\s+/).filter(validVersion);
+  measure = $("#measure").val();
+  target = $("#target").val().split(/\s+/).map(Math.floor);
+
+  title = "Time series for " + measure + ", bin(s) " + target.join(", ") + " (in %)";
+
+  $("#loading").text("Loading... ");
+  $("#loading").show();
+  Telemetry.init(function() {
+    var seriesByVersion = {};
+    loadAll(versions, measure, target,
+      function(version, data) {
+        console.log(version);
+        $("#loading").text($("#loading").text() +" ["+ version +"]");
+        seriesByVersion[version] = data;
+      },
+      function() {
+        $("#loading").hide();
+        produceMetrics(seriesByVersion);
+      });
+  });
+}
+
+var VERSIONS = "release/24 release/25 release/26 release/27 release/28 release/29 release/30 release/31 release/32 release/33 release/34 release/35 release/36 release/37 release/38 release/39".split(" ");
+//var VERSIONS = ["release/36", "release/37"];
+var MEASURE = "HTTP_PAGELOAD_IS_SSL";
+var TARGET = 1;
+var THRESHOLD = 500000;
+var TITLE = "pageload is ssl";
+var SERIES_TITLE = "";
+
+$(document).ready(function() {
+  $("#versions").val(VERSIONS.join(" "));
+  $("#measure").val(MEASURE);
+  $("#target").val(TARGET);
+
+  chart();
+});
+</script>
+<link rel="stylesheet" type="text/css" href="chrome-extension://pkehgijcmpdhfbdbbnkijodmdjhbjlgp/skin/socialwidgets.css"></head>
+
+<body>
+<div>
+  Versions: <input type="text" id="versions"><span style="width: 2em;">
+Measure: <input type="text" id="measure">
+Target: <input type="text" id="target">
+<button onclick="chart();" id="load">Load</button>
+</span></div>
+<div id="loading" style="display: block;">Loading... </div>
+</body></html>
